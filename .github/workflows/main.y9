@@ -1,0 +1,157 @@
+name: Build ComePany MAX Rebuild APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-max:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout MAX rebuild
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;35.0.0"
+
+      - name: Verify MAX project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Java ==="
+          java -version
+
+          echo "=== Gradle ==="
+          gradle --version
+
+          echo "=== Project ==="
+          pwd
+          ls -la
+
+          test -f settings.gradle.kts || {
+            echo "::error::settings.gradle.kts is missing"
+            exit 1
+          }
+
+          test -f build.gradle.kts || {
+            echo "::error::build.gradle.kts is missing"
+            exit 1
+          }
+
+          test -f app/build.gradle.kts || {
+            echo "::error::app/build.gradle.kts is missing"
+            exit 1
+          }
+
+      - name: Generate fresh Gradle wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf gradle/wrapper
+          rm -f gradlew gradlew.bat
+
+          gradle wrapper \
+            --gradle-version 8.11.1 \
+            --distribution-type bin
+
+          chmod +x gradlew
+
+          test -s gradle/wrapper/gradle-wrapper.jar
+          test -s gradle/wrapper/gradle-wrapper.properties
+
+          ./gradlew --version
+
+      - name: Clean MAX rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            clean
+
+      - name: Compile MAX rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            :app:assembleDebug
+
+      - name: Run MAX unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            :app:testDebugUnitTest
+
+      - name: Run MAX lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            :app:lintDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$(find app/build/outputs/apk/debug \
+            -type f \
+            -name '*.apk' \
+            -print \
+            -quit)"
+
+          if [ -z "${APK:-}" ]; then
+            echo "::error::MAX rebuild completed without producing an APK."
+            exit 1
+          fi
+
+          echo "======================================"
+          echo "MAXXXX APK BUILD SUCCESSFUL"
+          echo "======================================"
+          echo "$APK"
+          ls -lh "$APK"
+
+      - name: Upload MAXXXX APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ComePany-MAX-Rebuild-v1-APK
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
