@@ -1,0 +1,107 @@
+name: Build MAXxx Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-max:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Find and extract MAX source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$(find . -type f \( -name '*v42.35*HARD-TESTED*EMAIL-SAFE*.zip' -o -name '*v42.35*.zip' \) | head -n 1)"
+          if [ -z "${ZIP:-}" ]; then
+            echo "::error::MAX v42.35 source ZIP was not found."
+            exit 1
+          fi
+          rm -rf "$RUNNER_TEMP/max-source"
+          mkdir -p "$RUNNER_TEMP/max-source"
+          unzip -q "$ZIP" -d "$RUNNER_TEMP/max-source"
+          echo "MAX_SOURCE=$RUNNER_TEMP/max-source" >> "$GITHUB_ENV"
+
+      - name: Restore email-safe Gradle files
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' FILE; do
+            TARGET="${FILE%.txt}"
+            if [ ! -e "$TARGET" ]; then
+              mv "$FILE" "$TARGET"
+            fi
+          done < <(find "$MAX_SOURCE" -type f \( -name 'gradlew.txt' -o -name 'gradlew.bat.txt' -o -name 'settings.gradle.txt' -o -name 'build.gradle.txt' -o -name 'gradle.properties.txt' \) -print0)
+
+      - name: Locate Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_DIR=""
+          while IFS= read -r FILE; do
+            DIR="$(dirname "$FILE")"
+            if [ -f "$DIR/app/build.gradle" ] || [ -f "$DIR/app/build.gradle.kts" ]; then
+              PROJECT_DIR="$DIR"
+              break
+            fi
+          done < <(find "$MAX_SOURCE" -type f \( -name settings.gradle -o -name settings.gradle.kts \))
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "::error::Android project directory was not found."
+            exit 1
+          fi
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Verify Gradle
+        run: gradle --version
+
+      - name: Build MAX debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew --no-daemon --stacktrace :app:assembleDebug
+          else
+            gradle --no-daemon --stacktrace :app:assembleDebug
+          fi
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/max-apk"
+          find "$PROJECT_DIR" -type f -path '*/build/outputs/apk/debug/*.apk' -exec cp {} "$RUNNER_TEMP/max-apk/" \;
+          if ! find "$RUNNER_TEMP/max-apk" -type f -name '*.apk' | grep -q .; then
+            echo "::error::No debug APK was found."
+            exit 1
+          fi
+
+      - name: Upload MAX APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MAX-v42.35-debug-APK
+          path: ${{ runner.temp }}/max-apk/*.apk
+          if-no-files-found: error
+          retention-days: 14
